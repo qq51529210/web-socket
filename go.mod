@@ -1,3 +1,3 @@
 module github.com/qq51529210/web/socket
 
-go 1.14
+go 1.15
