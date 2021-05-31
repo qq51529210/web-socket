@@ -21,6 +21,7 @@ func (b *buffer) Grow(n int) {
 	m := n - (cap(b.b) - b.n)
 	if m > 0 {
 		b.b = append(b.b, make([]byte, m)...)
+		b.b = b.b[:cap(b.b)]
 	}
 }
 

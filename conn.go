@@ -40,9 +40,8 @@ var (
 )
 
 type Conn struct {
-	reader io.Reader
-	writer io.Writer
-	mask   byte
+	conn io.ReadWriteCloser
+	mask byte
 }
 
 // Write code type data.
@@ -100,19 +99,19 @@ func (c *Conn) writeFrame(fin byte, code Code, data []byte) error {
 		// Append mask data.
 		b.PutMask(key, data)
 		// Write buffer.
-		_, err := c.writer.Write(b.b[:b.n])
+		_, err := c.conn.Write(b.b[:b.n])
 		buffPool.Put(b)
 		return err
 	}
 	// Write header.
-	_, err := c.writer.Write(b.b[:b.n])
+	_, err := c.conn.Write(b.b[:b.n])
 	if err != nil {
 		buffPool.Put(b)
 		return err
 	}
 	buffPool.Put(b)
 	// Write data.
-	_, err = c.writer.Write(data)
+	_, err = c.conn.Write(data)
 	return err
 }
 
@@ -130,7 +129,7 @@ func (c *Conn) ReadLoop(maxLen int, handle func(Code, []byte) error) error {
 	)
 	for {
 		// Read a frame header.
-		_, err = io.ReadFull(c.reader, header[:2])
+		_, err = io.ReadFull(c.conn, header[:2])
 		if err != nil {
 			return err
 		}
@@ -145,14 +144,14 @@ func (c *Conn) ReadLoop(maxLen int, handle func(Code, []byte) error) error {
 		switch ch {
 		case 126:
 			// 2 bytes.
-			_, err = io.ReadFull(c.reader, header[:2])
+			_, err = io.ReadFull(c.conn, header[:2])
 			if err != nil {
 				return err
 			}
 			length = int(binary.BigEndian.Uint16(header[:]))
 		case 127:
 			// 8 bytes.
-			_, err = io.ReadFull(c.reader, header[:8])
+			_, err = io.ReadFull(c.conn, header[:8])
 			if err != nil {
 				return err
 			}
@@ -163,7 +162,7 @@ func (c *Conn) ReadLoop(maxLen int, handle func(Code, []byte) error) error {
 		}
 		// key
 		if mask != 0 {
-			_, err = io.ReadFull(c.reader, header[:4])
+			_, err = io.ReadFull(c.conn, header[:4])
 			if err != nil {
 				return err
 			}
@@ -175,7 +174,7 @@ func (c *Conn) ReadLoop(maxLen int, handle func(Code, []byte) error) error {
 		} else {
 			payload[code] = payload[code][:length+len(payload[code])]
 		}
-		_, err = io.ReadFull(c.reader, payload[code][i:])
+		_, err = io.ReadFull(c.conn, payload[code][i:])
 		if err != nil {
 			return err
 		}
@@ -194,4 +193,10 @@ func (c *Conn) ReadLoop(maxLen int, handle func(Code, []byte) error) error {
 			payload[code] = payload[code][:0]
 		}
 	}
+}
+
+// Write a CodeClose frame, then call Closer.
+func (c *Conn) Close() error {
+	c.Write(CodeClose, nil, 128)
+	return c.conn.Close()
 }

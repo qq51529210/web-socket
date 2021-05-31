@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -52,12 +53,26 @@ func Accept(res http.ResponseWriter, req *http.Request) (*Conn, error) {
 	res.Header().Set("Sec-WebSocket-Accept", GenSecWebSocketAccept(key))
 	// Set status code.
 	res.WriteHeader(http.StatusSwitchingProtocols)
+	// Hijack net.Conn
+	h, o := res.(http.Hijacker)
+	if !o {
+		return nil, errors.New("hijacker response conn fail")
+	}
+	conn, buf, err := h.Hijack()
+	if nil != err {
+		return nil, err
+	}
+	// 响应给客户端
+	err = buf.Flush()
+	if nil != err {
+		return nil, err
+	}
 	// Conn
-	return &Conn{reader: req.Body, writer: res, mask: _Mask[0]}, nil
+	return &Conn{conn: conn, mask: _Mask[0]}, nil
 }
 
 // Client side connection.
-func Dial(req *http.Request, reader io.Reader, writer io.Writer) (*Conn, error) {
+func Dial(req *http.Request, conn io.ReadWriteCloser) (*Conn, error) {
 	// Set required header
 	secWebSocketKey := GenSecWebSocketKey()
 	req.Header.Set("Connection", "Upgrade")
@@ -65,12 +80,12 @@ func Dial(req *http.Request, reader io.Reader, writer io.Writer) (*Conn, error) 
 	req.Header.Set("Sec-WebSocket-Version", "13")
 	req.Header.Set("Sec-WebSocket-Key", secWebSocketKey)
 	// Write http request.
-	err := req.Write(writer)
+	err := req.Write(conn)
 	if err != nil {
 		return nil, err
 	}
 	// Read http response.
-	rd := bufio.NewReader(reader)
+	rd := bufio.NewReader(conn)
 	res, err := http.ReadResponse(rd, req)
 	if err != nil {
 		return nil, err
@@ -90,7 +105,7 @@ func Dial(req *http.Request, reader io.Reader, writer io.Writer) (*Conn, error) 
 		return nil, fmt.Errorf(`invalid "Sec-Websocket-Accept" value %s`, key)
 	}
 	// Conn
-	return &Conn{reader: rd, writer: writer, mask: _Mask[1]}, nil
+	return &Conn{conn: conn, mask: _Mask[1]}, nil
 }
 
 func GenSecWebSocketAccept(webSocketKey string) string {
