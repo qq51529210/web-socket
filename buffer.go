@@ -65,11 +65,11 @@ func (b *buffer) PutRand(n int) {
 	b.n += n
 }
 
-func (b *buffer) PutMask(key, data []byte) {
-	n := b.n
-	b.Grow(len(data))
-	copy(b.b[n:], data)
-	for i := 0; i < len(data); i++ {
-		b.b[n] ^= key[i%4]
-	}
+func (b *buffer) PutBytes(d []byte) {
+	b.Grow(len(d))
+	b.n += copy(b.b[b.n:], d)
+}
+
+func (b *buffer) Reset() {
+	b.n = 0
 }

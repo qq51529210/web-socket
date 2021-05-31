@@ -39,6 +39,13 @@ var (
 	_Mask = [2]byte{0x00, 0x80}
 )
 
+// Mask data with key
+func maskData(data, key []byte) {
+	for i := 0; i < len(data); i++ {
+		data[i] ^= key[i%4]
+	}
+}
+
 type Conn struct {
 	conn io.ReadWriteCloser
 	mask byte
@@ -78,7 +85,7 @@ func (c *Conn) Write(code Code, data []byte, payload int) error {
 // Write a frame.
 func (c *Conn) writeFrame(fin byte, code Code, data []byte) error {
 	b := buffPool.Get().(*buffer)
-	b.n = 0
+	b.Reset()
 	// Encode fin and code.
 	b.Put8(fin | byte(code))
 	// Encode mask and payload length.
@@ -94,10 +101,13 @@ func (c *Conn) writeFrame(fin byte, code Code, data []byte) error {
 	}
 	// Encode mask key.
 	if c.mask != 0 {
-		key := b.b[b.n:]
+		i := b.n
 		b.PutRand(4)
+		key := b.b[i:b.n]
 		// Append mask data.
-		b.PutMask(key, data)
+		i = b.n
+		b.PutBytes(data)
+		maskData(b.b[i:b.n], key)
 		// Write buffer.
 		_, err := c.conn.Write(b.b[:b.n])
 		buffPool.Put(b)
@@ -125,72 +135,65 @@ func (c *Conn) ReadLoop(maxLen int, handle func(Code, []byte) error) error {
 		length  int
 		err     error
 		header  [8]byte
-		payload [16][]byte
+		key     [4]byte
+		payload [16]buffer
+		b       *buffer
 	)
 	for {
-		// Read a frame header.
+		// Read header.
 		_, err = io.ReadFull(c.conn, header[:2])
 		if err != nil {
 			return err
 		}
-		// Fin
+		// Decode fin
 		fin = header[0] & _Fin[1]
-		// code
+		// Decode code
 		code = Code(header[0] & 0x0f)
-		// mask
+		// Decode mask
 		mask = header[1] & _Mask[1]
-		// length
-		ch := header[1] & 0x7f
-		switch ch {
+		// Decode length
+		length = int(header[1] & 0x7f)
+		switch length {
 		case 126:
-			// 2 bytes.
 			_, err = io.ReadFull(c.conn, header[:2])
 			if err != nil {
 				return err
 			}
 			length = int(binary.BigEndian.Uint16(header[:]))
 		case 127:
-			// 8 bytes.
 			_, err = io.ReadFull(c.conn, header[:8])
 			if err != nil {
 				return err
 			}
 			length = int(binary.BigEndian.Uint64(header[:]))
-		default:
-			// 1 bytes.
-			length = int(ch)
 		}
-		// key
+		// Decode key
 		if mask != 0 {
-			_, err = io.ReadFull(c.conn, header[:4])
+			_, err = io.ReadFull(c.conn, key[:])
 			if err != nil {
 				return err
 			}
 		}
-		// Read a frame payload.
-		i := len(payload[code])
-		if cap(payload[code]) < length+i {
-			payload[code] = append(payload[code], make([]byte, length-(cap(payload[code])-i))...)
-		} else {
-			payload[code] = payload[code][:length+len(payload[code])]
-		}
-		_, err = io.ReadFull(c.conn, payload[code][i:])
+		// Read payload.
+		b = &payload[code]
+		b.Grow(length)
+		_, err = io.ReadFull(c.conn, b.b[b.n:b.n+length])
 		if err != nil {
 			return err
 		}
+		// Index of this frame payload.
+		idx := b.n
+		b.n += length
 		// Mask payload data.
 		if mask != 0 {
-			key := header[:4]
-			for i := 0; i < len(payload[code]); i++ {
-				payload[code][i] ^= key[i%4]
-			}
+			maskData(b.b[idx:b.n], key[:])
 		}
 		// Last frame of a message
 		if fin == _Fin[1] {
 			// Call back handle.
-			handle(code, payload[code])
+			handle(code, b.b[:b.n])
 			// Reset buffer.
-			payload[code] = payload[code][:0]
+			b.Reset()
 		}
 	}
 }
