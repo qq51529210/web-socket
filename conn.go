@@ -84,7 +84,7 @@ func (c *Conn) Write(code Code, data []byte, payload int) error {
 
 // Write a frame.
 func (c *Conn) writeFrame(fin byte, code Code, data []byte) error {
-	b := buffPool.Get().(*buffer)
+	b := encodeBufferPool.Get().(*encodeBuffer)
 	b.Reset()
 	// Encode fin and code.
 	b.Put8(fin | byte(code))
@@ -94,32 +94,33 @@ func (c *Conn) writeFrame(fin byte, code Code, data []byte) error {
 		b.Put8(c.mask | byte(payload))
 	} else if payload <= 0xffff {
 		b.Put8(c.mask | 126)
-		b.Put16(payload)
+		b.Put16(uint16(payload))
 	} else {
 		b.Put8(c.mask | 127)
-		b.Put64(payload)
+		b.Put64(uint64(payload))
 	}
 	// Encode mask key.
 	if c.mask != 0 {
-		i := b.n
-		b.PutRand(4)
-		key := b.b[i:b.n]
+		// Append random key.
+		keyIdx1 := b.len
+		b.PutRandom(4)
+		keyIdx2 := b.len
 		// Append mask data.
-		i = b.n
+		dataIdx := b.len
 		b.PutBytes(data)
-		maskData(b.b[i:b.n], key)
+		maskData(b.buf[dataIdx:], b.buf[keyIdx1:keyIdx2])
 		// Write buffer.
-		_, err := c.conn.Write(b.b[:b.n])
-		buffPool.Put(b)
+		_, err := c.conn.Write(b.buf[:b.len])
+		encodeBufferPool.Put(b)
 		return err
 	}
 	// Write header.
-	_, err := c.conn.Write(b.b[:b.n])
+	_, err := c.conn.Write(b.buf[:b.len])
 	if err != nil {
-		buffPool.Put(b)
+		encodeBufferPool.Put(b)
 		return err
 	}
-	buffPool.Put(b)
+	encodeBufferPool.Put(b)
 	// Write data.
 	_, err = c.conn.Write(data)
 	return err
@@ -136,8 +137,8 @@ func (c *Conn) ReadLoop(maxLen int, handle func(Code, []byte) error) error {
 		err     error
 		header  [8]byte
 		key     [4]byte
-		payload [16]buffer
-		b       *buffer
+		payload [16]readBuffer
+		b       *readBuffer
 	)
 	for {
 		// Read header.
@@ -176,22 +177,19 @@ func (c *Conn) ReadLoop(maxLen int, handle func(Code, []byte) error) error {
 		}
 		// Read payload.
 		b = &payload[code]
-		b.Grow(length)
-		_, err = io.ReadFull(c.conn, b.b[b.n:b.n+length])
+		idx := b.len
+		err = b.ReadN(c.conn, length)
 		if err != nil {
 			return err
 		}
-		// Index of this frame payload.
-		idx := b.n
-		b.n += length
 		// Mask payload data.
 		if mask != 0 {
-			maskData(b.b[idx:b.n], key[:])
+			maskData(b.buf[idx:b.len], key[:])
 		}
 		// Last frame of a message
 		if fin == _Fin[1] {
 			// Call back handle.
-			handle(code, b.b[:b.n])
+			handle(code, b.buf[:b.len])
 			// Reset buffer.
 			b.Reset()
 		}
